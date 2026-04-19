@@ -317,33 +317,46 @@ class QuatBot:
         if not approved:
             logger.warning(f"RISK REJECT {symbol}: {risk_reason}")
             return False
-
         # Position sizing
         quantity = self.risk_manager.calculate_position_size(
             signal.entry_price, signal.stop_loss
         )
         if quantity <= 0:
             return False
+            
+        open_positions = self.db.get_open_positions()
+        existing_pos = next((p for p in open_positions if p["symbol"] == symbol), None)
+        
+        # Spot Market constraint: Cannot short sell
+        if signal.direction.upper() == "SELL":
+            if not existing_pos:
+                logger.info(f"SKIP {symbol}: SPOT MARKET constraint — cannot open short (SELL) positions without holding asset.")
+                return False
+            # If closing an existing long, we must sell exactly what we hold!
+            quantity = float(existing_pos.get("quantity", quantity))
+            position_value_inr = quantity * signal.entry_price
+            logger.info(f"CLOSING LONG {symbol}: Selling holding of {quantity:.6f} at approx ₹{position_value_inr:.0f}")
 
-        # CRITICAL: Affordability check — position value must fit in balance
+        # CRITICAL: Affordability check (ONLY FOR BUYING)
         position_value = quantity * signal.entry_price
         available_capital = self.risk_manager.capital
         min_order_inr = float(os.getenv("MIN_ORDER_VALUE_INR", 100))
 
-        if position_value > available_capital * 0.95:  # 5% buffer for fees
-            # Scale down to what we can afford (use 90% of balance max)
-            max_qty = (available_capital * 0.90) / signal.entry_price
-            if max_qty * signal.entry_price < min_order_inr:
-                logger.warning(
-                    f"SKIP {symbol}: Position ₹{position_value:.0f} exceeds balance "
-                    f"₹{available_capital:.0f}, scaled qty too small (₹{max_qty * signal.entry_price:.0f})"
+        if signal.direction.upper() == "BUY":
+            if position_value > available_capital * 0.95:  # 5% buffer for fees
+                # Scale down to what we can afford (use 90% of balance max)
+                max_qty = (available_capital * 0.90) / signal.entry_price
+                if max_qty * signal.entry_price < min_order_inr:
+                    logger.warning(
+                        f"SKIP {symbol}: Position ₹{position_value:.0f} exceeds balance "
+                        f"₹{available_capital:.0f}, scaled qty too small (₹{max_qty * signal.entry_price:.0f})"
+                    )
+                    return False
+                logger.info(
+                    f"SIZE ADJ {symbol}: ₹{position_value:.0f} → ₹{max_qty * signal.entry_price:.0f} "
+                    f"(balance: ₹{available_capital:.0f})"
                 )
-                return False
-            logger.info(
-                f"SIZE ADJ {symbol}: ₹{position_value:.0f} → ₹{max_qty * signal.entry_price:.0f} "
-                f"(balance: ₹{available_capital:.0f})"
-            )
-            quantity = max_qty
+                quantity = max_qty
 
         # Minimum order value check (CoinSwitch requires ~₹100 minimum)
         if quantity * signal.entry_price < min_order_inr:

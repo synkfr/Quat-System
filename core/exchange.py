@@ -177,16 +177,25 @@ class CoinSwitchExchange:
     def place_order(self, symbol: str, side: str, order_type: str,
                     price: float, quantity: float,
                     exchange: str = "coinswitchx") -> Dict[str, Any]:
-        """Place a live order."""
+        """Place a live order on CoinSwitch Pro.
+        
+        Per API docs:
+        - price/quantity are strings in JSON
+        - price is only required for limit orders
+        - type must be "limit" or "market"
+        """
         path = "/trade/api/v2/order"
+        # Cast to native float first (strips numpy types), then to str
         body = {
-            "symbol": symbol,
             "side": side.lower(),
+            "symbol": symbol,
             "type": order_type.lower(),
-            "price": float(price),
-            "quantity": float(quantity),
+            "quantity": str(float(quantity)),
             "exchange": exchange,
         }
+        # Price is only required for limit orders
+        if order_type.lower() == "limit":
+            body["price"] = str(float(price))
         return self._request("POST", path, body=body)
 
     def get_order_status(self, order_id: str,

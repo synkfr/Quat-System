@@ -144,6 +144,7 @@ class QuatBot:
             pairs_data = {}
             current_prices = {}
             regime_info = {}
+            skip_reasons = []
 
             for pair in scan_pairs:
                 try:
@@ -162,7 +163,7 @@ class QuatBot:
                             depth, max_spread_pct=self.spread_max_pct
                         )
                         if not spread_ok:
-                            logger.debug(f"SKIP {pair}: Spread {spread_pct:.2f}% > {self.spread_max_pct}%")
+                            skip_reasons.append(f"{pair.split('/')[0]}:spread")
                             continue
 
                     # Liquidity check
@@ -170,7 +171,7 @@ class QuatBot:
                     raw_trades = trades_res.get("data", [])
                     is_liquid, volume, liq_reason = self.asset_filter.check_liquidity(raw_trades)
                     if not is_liquid:
-                        logger.debug(f"SKIP {pair}: {liq_reason}")
+                        skip_reasons.append(f"{pair.split('/')[0]}:liq")
                         continue
 
                     # Fetch multi-timeframe candles
@@ -183,18 +184,21 @@ class QuatBot:
                     df_4h = self.processor.format_native_candles(raw_4h)
 
                     if df_15m.empty or len(df_15m) < 30:
+                        skip_reasons.append(f"{pair.split('/')[0]}:candles({len(df_15m) if not df_15m.empty else 0})")
                         continue
 
                     pairs_data[pair] = {"15m": df_15m, "1h": df_1h, "4h": df_4h}
 
                 except Exception as e:
-                    logger.debug(f"Data fetch failed for {pair}: {e}")
+                    skip_reasons.append(f"{pair.split('/')[0]}:err")
                     continue
 
             if not pairs_data:
-                self._update_status("DATA", "NO_DATA", "No valid data")
+                skip_str = ", ".join(skip_reasons[:10]) if skip_reasons else "all filtered"
+                logger.info(f"NO DATA: 0/{len(scan_pairs)} pairs passed filters [{skip_str}]")
+                self._update_status("DATA", "NO_DATA", f"No valid data: {skip_str}")
                 self._monitor_all_positions()
-                return {"step": "DATA", "action": "NO_DATA", "details": "No valid pairs"}
+                return {"step": "DATA", "action": "NO_DATA", "details": skip_str}
 
             logger.info(f"Data ready for {len(pairs_data)} pairs")
 

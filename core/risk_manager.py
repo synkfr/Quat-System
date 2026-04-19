@@ -172,8 +172,14 @@ class RiskManager:
     def calculate_trailing_stop(self, position: Dict, current_price: float,
                                  current_atr: float) -> Optional[float]:
         """
-        ATR-based trailing stop.
-        Activates after ~1.25R profit, trails at 1.75 ATR from price.
+        Two-phase dynamic trade management:
+        
+        Phase 1 — BREAKEVEN: When profit reaches 1R, move SL to entry price.
+        Phase 2 — ATR TRAIL: When profit reaches activation_r (default 1.25R),
+                  trail SL at trailing_atr_multiplier * ATR from current price.
+        
+        The initial Hard SL is placed on the exchange at entry.
+        This method manages the Soft (programmatic) trailing SL.
         Returns new SL if it should be moved, None otherwise.
         """
         if not self.trailing_stop_enabled:
@@ -182,28 +188,47 @@ class RiskManager:
         entry = position.get("entry_price", 0)
         current_sl = position.get("stop_loss", 0)
         direction = position.get("direction", "BUY")
-        risk = abs(entry - current_sl)
+        original_risk = abs(entry - current_sl)
+
+        # Use the initial risk distance, not the current (which may have moved)
+        # If SL is already at or past breakeven, use a stored or inferred risk
+        initial_sl = position.get("initial_stop_loss", current_sl)
+        risk = abs(entry - initial_sl)
 
         if risk <= 0 or current_atr <= 0:
             return None
 
-        # Calculate current profit in R
         if direction == "BUY":
             profit = current_price - entry
             profit_r = profit / risk
 
-            # Activate trailing after 1.25R profit
+            # Phase 1: Breakeven at 1R
+            if profit_r >= 1.0 and current_sl < entry:
+                # Move SL to exact entry price (breakeven)
+                return entry
+
+            # Phase 2: ATR trailing after activation_r
             if profit_r >= self.trailing_activation_r:
                 new_sl = current_price - (self.trailing_atr_multiplier * current_atr)
+                # Minimum: never below entry (breakeven floor)
+                new_sl = max(new_sl, entry)
                 # Only move SL up, never down
                 if new_sl > current_sl:
                     return new_sl
+
         else:  # SELL
             profit = entry - current_price
             profit_r = profit / risk
 
+            # Phase 1: Breakeven at 1R
+            if profit_r >= 1.0 and current_sl > entry:
+                return entry
+
+            # Phase 2: ATR trailing after activation_r
             if profit_r >= self.trailing_activation_r:
                 new_sl = current_price + (self.trailing_atr_multiplier * current_atr)
+                # Maximum: never above entry (breakeven ceiling)
+                new_sl = min(new_sl, entry)
                 # Only move SL down, never up
                 if new_sl < current_sl:
                     return new_sl

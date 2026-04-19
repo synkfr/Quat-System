@@ -1,19 +1,22 @@
 import pandas as pd
 import numpy as np
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 
 class PatternRecognition:
     """
     Price action pattern detection for confluence-based trading.
-    v4.0: Added quality filters — body size, S/R proximity, volume confirmation.
+    v5.0: Added Marubozu, Doji detection. Added location-based validation —
+    patterns are only valid at S/R levels, Fibonacci zones, or EMA boundaries.
     """
+
+    # ── Engulfing ───────────────────────────────────────────
 
     @staticmethod
     def detect_engulfing(df: pd.DataFrame) -> List[Dict[str, Any]]:
         """
         Detect bullish and bearish engulfing patterns.
-        v4.0: Requires minimum body size > 0.3% of price to filter noise.
+        Requires minimum body size > 0.3% of price to filter noise.
         """
         signals = []
         o = df["open"].values
@@ -43,7 +46,7 @@ class PatternRecognition:
                         "pattern": "BULLISH_ENGULFING",
                         "direction": "BUY",
                         "price": float(c[i]),
-                        "strength": body_size / c[i] * 100,  # Relative body size
+                        "strength": body_size / c[i] * 100,
                     })
 
             # Bearish engulfing
@@ -59,12 +62,14 @@ class PatternRecognition:
 
         return signals
 
+    # ── Pin Bar ─────────────────────────────────────────────
+
     @staticmethod
     def detect_pin_bar(df: pd.DataFrame, sr_levels: List[float] = None,
                        wick_ratio: float = 2.0) -> List[Dict[str, Any]]:
         """
         Detect pin bars (hammer / shooting star).
-        v4.0: Pin bars only valid near support/resistance levels.
+        Pin bars only valid near support/resistance levels.
         """
         signals = []
         o = df["open"].values
@@ -110,12 +115,112 @@ class PatternRecognition:
 
         return signals
 
+    # ── Marubozu ────────────────────────────────────────────
+
+    @staticmethod
+    def detect_marubozu(df: pd.DataFrame, max_wick_pct: float = 0.05) -> List[Dict[str, Any]]:
+        """
+        Detect Marubozu candles — strong institutional buying/selling.
+        A Marubozu has virtually no wicks (< 5% of total range).
+        Body must be > 0.5% of price to filter tiny candles.
+        """
+        signals = []
+        o = df["open"].values
+        h = df["high"].values
+        l = df["low"].values
+        c = df["close"].values
+
+        for i in range(len(df)):
+            total_range = h[i] - l[i]
+            if total_range <= 0:
+                continue
+
+            body = abs(c[i] - o[i])
+            upper_wick = h[i] - max(o[i], c[i])
+            lower_wick = min(o[i], c[i]) - l[i]
+
+            # Body must dominate (> 0.5% of price and > 90% of range)
+            if c[i] > 0 and (body / c[i]) < 0.005:
+                continue
+            if body / total_range < 0.90:
+                continue
+
+            # Wicks must be tiny
+            if upper_wick / total_range > max_wick_pct or lower_wick / total_range > max_wick_pct:
+                continue
+
+            direction = "BUY" if c[i] > o[i] else "SELL"
+            signals.append({
+                "index": i,
+                "pattern": f"{'BULLISH' if direction == 'BUY' else 'BEARISH'}_MARUBOZU",
+                "direction": direction,
+                "price": float(c[i]),
+                "strength": body / total_range,  # 0.90-1.0 range
+            })
+
+        return signals
+
+    # ── Doji ────────────────────────────────────────────────
+
+    @staticmethod
+    def detect_doji(df: pd.DataFrame, body_threshold: float = 0.1) -> List[Dict[str, Any]]:
+        """
+        Detect Doji candles — indecision / trend exhaustion warning signs.
+        A Doji has a very small body (< 10% of total range).
+        Classified by wick balance:
+          - STANDARD_DOJI: balanced wicks
+          - DRAGONFLY_DOJI: long lower wick (bullish reversal potential)
+          - GRAVESTONE_DOJI: long upper wick (bearish reversal potential)
+        """
+        signals = []
+        o = df["open"].values
+        h = df["high"].values
+        l = df["low"].values
+        c = df["close"].values
+
+        for i in range(len(df)):
+            total_range = h[i] - l[i]
+            if total_range <= 0:
+                continue
+
+            body = abs(c[i] - o[i])
+            body_ratio = body / total_range
+
+            if body_ratio > body_threshold:
+                continue
+
+            upper_wick = h[i] - max(o[i], c[i])
+            lower_wick = min(o[i], c[i]) - l[i]
+
+            # Classify doji type
+            if lower_wick > 2 * upper_wick and lower_wick > 0.3 * total_range:
+                pattern = "DRAGONFLY_DOJI"
+                direction = "BUY"  # Potential bullish reversal
+            elif upper_wick > 2 * lower_wick and upper_wick > 0.3 * total_range:
+                pattern = "GRAVESTONE_DOJI"
+                direction = "SELL"  # Potential bearish reversal
+            else:
+                pattern = "STANDARD_DOJI"
+                direction = "NEUTRAL"
+
+            signals.append({
+                "index": i,
+                "pattern": pattern,
+                "direction": direction,
+                "price": float(c[i]),
+                "strength": 1.0 - body_ratio,  # Higher = more doji-like
+            })
+
+        return signals
+
+    # ── Breakout-Retest ─────────────────────────────────────
+
     @staticmethod
     def detect_breakout_retest(df: pd.DataFrame, sr_levels: List[float],
                                tolerance: float = 0.002) -> List[Dict[str, Any]]:
         """
         Detect breakout-retest setups.
-        v4.0: Requires volume surge on breakout candle (volume > 1.5x SMA).
+        Requires volume surge on breakout candle (volume > 1.5x SMA).
         """
         signals = []
         if len(df) < 10 or not sr_levels:
@@ -175,12 +280,14 @@ class PatternRecognition:
 
         return signals
 
+    # ── Liquidity Grab ──────────────────────────────────────
+
     @staticmethod
     def detect_liquidity_grab(df: pd.DataFrame, sr_levels: List[float],
                               tolerance: float = 0.003) -> List[Dict[str, Any]]:
         """
         Detect liquidity grabs / stop hunts.
-        v4.0: Requires reversal candle close beyond midpoint of wick (strong rejection).
+        Requires reversal candle close beyond midpoint of wick (strong rejection).
         """
         signals = []
         if len(df) < 2 or not sr_levels:
@@ -196,7 +303,6 @@ class PatternRecognition:
                 # Bullish liquidity grab at support
                 if l[i] < level * (1 - tolerance) and c[i] > level and o[i] > level:
                     if c[i] > o[i]:
-                        # v4.0: Close must be above midpoint of candle range
                         candle_mid = (h[i] + l[i]) / 2
                         if c[i] > candle_mid:
                             signals.append({
@@ -224,16 +330,105 @@ class PatternRecognition:
 
         return signals
 
+    # ── Location Validator ──────────────────────────────────
+
+    @staticmethod
+    def validate_location(pattern: Dict[str, Any],
+                          sr_levels: List[float],
+                          fib_levels: Dict[str, float],
+                          ema_values: Dict[str, float],
+                          current_volume: float = 0,
+                          avg_volume: float = 0,
+                          proximity_pct: float = 1.5) -> Dict[str, Any]:
+        """
+        Location-based validity filter. A pattern is ONLY a valid entry trigger
+        if it occurs at a confirmed technical zone:
+          1. Support/Resistance level (within proximity_pct%)
+          2. Fibonacci retracement zone (38.2%, 50%, 61.8%)
+          3. EMA boundary (EMA 20, 50, or 200)
+
+        Also checks for volume confirmation (above average).
+
+        Returns the pattern dict with added fields:
+          - location_valid: bool
+          - location_factors: list of reasons
+          - location_score: float (0-1, higher = better location)
+        """
+        price = pattern.get("price", 0)
+        if price <= 0:
+            pattern["location_valid"] = False
+            pattern["location_factors"] = []
+            pattern["location_score"] = 0.0
+            return pattern
+
+        factors = []
+        score = 0.0
+
+        # 1. S/R proximity
+        if sr_levels:
+            for level in sr_levels:
+                if level > 0:
+                    pct_dist = abs(price - level) / level * 100
+                    if pct_dist <= proximity_pct:
+                        factors.append(f"S/R level {level:.0f} ({pct_dist:.1f}%)")
+                        score += 0.35
+                        break
+
+        # 2. Fibonacci zones (38.2%, 50%, 61.8% — the golden trio)
+        if fib_levels:
+            fib_keys = ["fib_382", "fib_500", "fib_618"]
+            fib_names = ["38.2%", "50%", "61.8%"]
+            for fk, fn in zip(fib_keys, fib_names):
+                fib_val = fib_levels.get(fk, 0)
+                if fib_val > 0:
+                    pct_dist = abs(price - fib_val) / fib_val * 100
+                    if pct_dist <= proximity_pct:
+                        factors.append(f"Fib {fn} ({fib_val:.0f})")
+                        score += 0.30
+                        break
+
+        # 3. EMA boundary (within 0.5% of EMA 20, 50, or 200)
+        ema_proximity = 0.5
+        for ema_name, ema_val in ema_values.items():
+            if ema_val and ema_val > 0:
+                pct_dist = abs(price - ema_val) / ema_val * 100
+                if pct_dist <= ema_proximity:
+                    factors.append(f"{ema_name} ({ema_val:.0f})")
+                    score += 0.20
+                    break
+
+        # 4. Volume confirmation (bonus)
+        if current_volume > 0 and avg_volume > 0:
+            if current_volume > 1.2 * avg_volume:
+                factors.append(f"Volume {current_volume/avg_volume:.1f}x avg")
+                score += 0.15
+
+        pattern["location_valid"] = len(factors) > 0
+        pattern["location_factors"] = factors
+        pattern["location_score"] = min(score, 1.0)
+        return pattern
+
+    # ── Master Scanner ──────────────────────────────────────
+
     def scan_all(self, df: pd.DataFrame,
-                 sr_levels: List[float] = None) -> List[Dict[str, Any]]:
+                 sr_levels: List[float] = None,
+                 fib_levels: Dict[str, float] = None,
+                 ema_values: Dict[str, float] = None,
+                 current_volume: float = 0,
+                 avg_volume: float = 0) -> List[Dict[str, Any]]:
         """
         Run all pattern detectors on the DataFrame.
         Returns merged list sorted by strength (highest quality first).
         Only returns patterns from the last 5 candles (recent signals only).
+
+        v5.0: All reversal/momentum patterns are validated for location.
+        Patterns in the "middle of nowhere" are filtered out.
+        Doji patterns are returned as warnings (not entry triggers).
         """
         all_signals = []
         all_signals.extend(self.detect_engulfing(df))
         all_signals.extend(self.detect_pin_bar(df, sr_levels))
+        all_signals.extend(self.detect_marubozu(df))
 
         if sr_levels:
             all_signals.extend(self.detect_breakout_retest(df, sr_levels))
@@ -242,6 +437,37 @@ class PatternRecognition:
         # Filter to only recent patterns (last 5 candles)
         cutoff = len(df) - 5
         recent = [s for s in all_signals if s["index"] >= cutoff]
+
+        # Apply location validation to reversal/momentum patterns
+        location_patterns = {"BULLISH_ENGULFING", "BEARISH_ENGULFING",
+                             "BULLISH_PIN_BAR", "BEARISH_PIN_BAR",
+                             "BULLISH_MARUBOZU", "BEARISH_MARUBOZU"}
+
+        validated = []
+        for sig in recent:
+            if sig["pattern"] in location_patterns:
+                sig = self.validate_location(
+                    sig,
+                    sr_levels=sr_levels or [],
+                    fib_levels=fib_levels or {},
+                    ema_values=ema_values or {},
+                    current_volume=current_volume,
+                    avg_volume=avg_volume,
+                )
+                # Only keep patterns at valid locations
+                if sig.get("location_valid", False):
+                    validated.append(sig)
+            else:
+                # Breakout/retest and liquidity grabs are already at S/R by definition
+                validated.append(sig)
+
+        # Doji as warnings (separate scan, not entry triggers)
+        doji_signals = self.detect_doji(df)
+        recent_doji = [s for s in doji_signals if s["index"] >= cutoff]
+        for d in recent_doji:
+            d["is_warning"] = True
+            validated.append(d)
+
         # Sort by strength descending (highest quality first)
-        recent.sort(key=lambda x: x.get("strength", 0), reverse=True)
-        return recent
+        validated.sort(key=lambda x: x.get("strength", 0), reverse=True)
+        return validated

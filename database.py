@@ -59,6 +59,7 @@ class Database:
                     direction TEXT NOT NULL,
                     entry_price REAL NOT NULL,
                     stop_loss REAL NOT NULL,
+                    initial_stop_loss REAL,
                     take_profit REAL NOT NULL,
                     quantity REAL NOT NULL,
                     exit_price REAL,
@@ -68,6 +69,12 @@ class Database:
                     order_id TEXT
                 )
             """)
+
+            # Migration: add initial_stop_loss for existing DBs
+            try:
+                cursor.execute("ALTER TABLE positions ADD COLUMN initial_stop_loss REAL")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
             # Portfolio snapshots for capital tracking
             cursor.execute("""
@@ -148,11 +155,12 @@ class Database:
         with self._get_conn() as conn:
             cursor = conn.execute("""
                 INSERT INTO positions (timestamp_open, symbol, direction, entry_price,
-                    stop_loss, take_profit, quantity, status, confluence_factors, order_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
+                    stop_loss, initial_stop_loss, take_profit, quantity, status,
+                    confluence_factors, order_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
             """, (
                 datetime.now().isoformat(), symbol, direction, entry_price,
-                stop_loss, take_profit, quantity,
+                stop_loss, stop_loss, take_profit, quantity,
                 json.dumps(confluence_factors or []), order_id
             ))
             conn.commit()

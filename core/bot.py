@@ -394,7 +394,7 @@ class QuatBot:
                 if current_price <= 0:
                     continue
 
-                # Trailing stop
+                # Trailing stop (two-phase: breakeven → ATR trail)
                 try:
                     raw_candles = self.exchange.get_candles(symbol, interval="15m", limit=20)
                     df = self.processor.format_native_candles(raw_candles)
@@ -409,9 +409,16 @@ class QuatBot:
                 if current_atr > 0:
                     new_sl = self.risk_manager.calculate_trailing_stop(pos, current_price, current_atr)
                     if new_sl is not None:
+                        entry = pos.get("entry_price", 0)
+                        old_sl = pos.get("stop_loss", 0)
                         self.db.update_position_sl(pos["id"], new_sl)
                         pos["stop_loss"] = new_sl
-                        logger.info(f"TRAILING SL: {symbol} moved to {new_sl:.2f}")
+
+                        # Determine phase for logging
+                        if abs(new_sl - entry) < 0.01:
+                            logger.info(f"BREAKEVEN: {symbol} SL moved to entry {new_sl:.2f} (1R reached)")
+                        else:
+                            logger.info(f"ATR TRAIL: {symbol} SL {old_sl:.2f} → {new_sl:.2f}")
 
                 # SL/TP
                 hit = self.exchange.check_sl_tp_hit(pos, current_price)

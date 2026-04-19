@@ -144,7 +144,11 @@ class MeanReversionStrategy:
     Deploy in RANGING regimes.
     Entry: RSI < 30 at support (buy) or RSI > 70 at resistance (sell).
     Confirmation: Price near BB band + StochRSI crossover.
+    v5.0: Location-validated candlestick patterns (engulfing/pin bar) add confluence.
     """
+
+    def __init__(self):
+        self.patterns = PatternRecognition()
 
     def evaluate(self, df: pd.DataFrame, ind: Dict[str, Any],
                  regime: MarketRegime) -> Optional[StrategySignal]:
@@ -160,12 +164,37 @@ class MeanReversionStrategy:
         atr = ind.get("atr", 0)
         supports = ind.get("support_levels", [])
         resistances = ind.get("resistance_levels", [])
+        fib = ind.get("fibonacci", {})
 
         if pd.isna(rsi) or pd.isna(close):
             return None
 
         confluence = []
         direction = None
+        pattern_triggers = []
+
+        # Scan for location-validated reversal patterns
+        all_sr = supports + resistances
+        ema_vals = {
+            "EMA20": ind.get("ema_20"),
+            "EMA50": ind.get("ema_50"),
+            "EMA200": ind.get("ema_200"),
+        }
+        validated_patterns = self.patterns.scan_all(
+            df, sr_levels=all_sr, fib_levels=fib,
+            ema_values=ema_vals,
+            current_volume=ind.get("current_volume", 0),
+            avg_volume=ind.get("volume_sma", 0),
+        )
+        # Only recent reversal patterns (not doji warnings)
+        recent_reversal = [
+            p for p in validated_patterns
+            if p["index"] >= len(df) - 3
+            and not p.get("is_warning")
+            and p.get("location_valid", False)
+            and p["pattern"] in ("BULLISH_ENGULFING", "BEARISH_ENGULFING",
+                                 "BULLISH_PIN_BAR", "BEARISH_PIN_BAR")
+        ]
 
         # BULLISH MEAN REVERSION (buy at support/oversold)
         if rsi < 35 and rsi > rsi_prev:  # Oversold AND curling up
@@ -181,6 +210,15 @@ class MeanReversionStrategy:
             )
             if near_support:
                 confluence.append("Price near support level")
+
+            # Candlestick pattern at support
+            bull_patterns = [p for p in recent_reversal if p["direction"] == "BUY"]
+            if bull_patterns:
+                p = bull_patterns[0]
+                confluence.append(f"{p['pattern']} at key level")
+                pattern_triggers.append(p["pattern"])
+                for lf in p.get("location_factors", []):
+                    confluence.append(f"Location: {lf}")
 
             # StochRSI bonus
             if stoch_cross == "BULLISH_CROSS":
@@ -202,6 +240,15 @@ class MeanReversionStrategy:
             if near_resistance:
                 confluence.append("Price near resistance level")
 
+            # Candlestick pattern at resistance
+            bear_patterns = [p for p in recent_reversal if p["direction"] == "SELL"]
+            if bear_patterns:
+                p = bear_patterns[0]
+                confluence.append(f"{p['pattern']} at key level")
+                pattern_triggers.append(p["pattern"])
+                for lf in p.get("location_factors", []):
+                    confluence.append(f"Location: {lf}")
+
             if stoch_cross == "BEARISH_CROSS":
                 confluence.append("StochRSI bearish crossover")
 
@@ -210,6 +257,12 @@ class MeanReversionStrategy:
 
         if direction is None:
             return None
+
+        # Check for doji warning (trend exhaustion confirmation — good for reversals)
+        doji_warnings = [p for p in validated_patterns
+                        if p.get("is_warning") and p["index"] >= len(df) - 3]
+        if doji_warnings:
+            confluence.append(f"Doji warning: {doji_warnings[0]['pattern']} (trend exhaustion)")
 
         if pd.isna(atr) or atr <= 0:
             atr = close * 0.01
@@ -229,6 +282,7 @@ class MeanReversionStrategy:
             stop_loss=sl, take_profit=tp,
             confidence=confidence, strategy="MEAN_REVERSION",
             confluence_factors=confluence,
+            pattern_triggers=pattern_triggers,
         )
 
 
@@ -257,6 +311,7 @@ class BreakoutStrategy:
         resistances = ind.get("resistance_levels", [])
         bb_upper = ind.get("bb_upper", 0)
         bb_lower = ind.get("bb_lower", 0)
+        fib = ind.get("fibonacci", {})
 
         if pd.isna(close):
             return None
@@ -275,13 +330,27 @@ class BreakoutStrategy:
         if not volume_surge:
             return None  # Fakeout filter: no volume = no breakout
 
-        # Check for breakout patterns
+        # Run location-validated pattern scan
         all_sr = supports + resistances
-        breakout_patterns = self.patterns.detect_breakout_retest(df, all_sr)
-        liq_patterns = self.patterns.detect_liquidity_grab(df, all_sr)
+        ema_vals = {
+            "EMA20": ind.get("ema_20"),
+            "EMA50": ind.get("ema_50"),
+            "EMA200": ind.get("ema_200"),
+        }
 
-        recent_breakouts = [p for p in breakout_patterns if p["index"] >= len(df) - 3]
-        recent_liq = [p for p in liq_patterns if p["index"] >= len(df) - 3]
+        all_patterns = self.patterns.scan_all(
+            df, sr_levels=all_sr, fib_levels=fib,
+            ema_values=ema_vals,
+            current_volume=current_vol, avg_volume=vol_sma,
+        )
+
+        recent_breakouts = [p for p in all_patterns
+                           if "BREAKOUT" in p.get("pattern", "") and p["index"] >= len(df) - 3]
+        recent_liq = [p for p in all_patterns
+                     if "LIQUIDITY" in p.get("pattern", "") and p["index"] >= len(df) - 3]
+        recent_marubozu = [p for p in all_patterns
+                          if "MARUBOZU" in p.get("pattern", "") and p["index"] >= len(df) - 2
+                          and not p.get("is_warning")]
 
         # Bullish breakout
         if any(p["direction"] == "BUY" for p in recent_breakouts):
@@ -290,7 +359,9 @@ class BreakoutStrategy:
         elif any(p["direction"] == "BUY" for p in recent_liq):
             confluence.append("Liquidity grab pattern (bull)")
             direction = "BUY"
-        # BB breakout
+        elif any(p["direction"] == "BUY" for p in recent_marubozu):
+            confluence.append("Bullish Marubozu (institutional buying)")
+            direction = "BUY"
         elif not pd.isna(bb_upper) and close > bb_upper:
             confluence.append("Bollinger Band upper breakout")
             direction = "BUY"
@@ -303,6 +374,9 @@ class BreakoutStrategy:
             elif any(p["direction"] == "SELL" for p in recent_liq):
                 confluence.append("Liquidity grab pattern (bear)")
                 direction = "SELL"
+            elif any(p["direction"] == "SELL" for p in recent_marubozu):
+                confluence.append("Bearish Marubozu (institutional selling)")
+                direction = "SELL"
             elif not pd.isna(bb_lower) and close < bb_lower:
                 confluence.append("Bollinger Band lower breakout")
                 direction = "SELL"
@@ -310,7 +384,14 @@ class BreakoutStrategy:
         if direction is None:
             return None
 
-        # ADX confirmation (breakouts need momentum)
+        # Add location factors from validated patterns
+        triggered = recent_breakouts + recent_liq + recent_marubozu
+        for p in triggered[:2]:
+            for lf in p.get("location_factors", []):
+                if lf not in confluence:
+                    confluence.append(f"Location: {lf}")
+
+        # ADX confirmation
         if not pd.isna(adx) and adx > 20:
             confluence.append(f"ADX momentum: {adx:.1f}")
 
@@ -321,7 +402,7 @@ class BreakoutStrategy:
             confluence.append("MACD bearish crossover")
 
         if len(confluence) < 2:
-            return None  # Need at least 2 confirmations
+            return None
 
         if pd.isna(atr) or atr <= 0:
             atr = close * 0.01
@@ -341,7 +422,7 @@ class BreakoutStrategy:
             stop_loss=sl, take_profit=tp,
             confidence=confidence, strategy="BREAKOUT",
             confluence_factors=confluence,
-            pattern_triggers=[p["pattern"] for p in (recent_breakouts + recent_liq)[:2]],
+            pattern_triggers=[p["pattern"] for p in triggered[:2]],
         )
 
 

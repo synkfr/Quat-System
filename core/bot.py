@@ -206,21 +206,36 @@ class QuatBot:
             )
 
             if not signals:
-                # Log regime info for debugging
+                # Enhanced HOLD logging — show WHY each pair didn't trigger
                 regime_summary = []
+                detail_lines = []
                 for pair, data in list(pairs_data.items())[:5]:
                     try:
                         ind = self.indicators.get_all_indicators(data["15m"])
                         det = self.signal_engine._get_detector(pair)
                         regime = det.detect(data["15m"], ind)
-                        regime_summary.append(f"{pair.split('/')[0]}:{regime.value[:4]}")
+
+                        rsi = ind.get("rsi", 0)
+                        adx = ind.get("adx", 0)
+                        vol = ind.get("current_volume", 0)
+                        vol_sma = max(ind.get("volume_sma", 1), 1)
+                        vol_ratio = vol / vol_sma if vol_sma > 0 else 0
+
+                        short_name = pair.split('/')[0]
+                        regime_summary.append(f"{short_name}:{regime.value[:4]}")
+                        detail_lines.append(
+                            f"  {short_name}: {regime.value} | RSI={rsi:.0f} ADX={adx:.0f} "
+                            f"Vol={vol_ratio:.1f}x"
+                        )
                     except Exception:
                         pass
 
                 regime_str = " | ".join(regime_summary) if regime_summary else "N/A"
                 self._update_status("SIGNAL", "HOLD",
                                     f"No signals ({len(pairs_data)} pairs) | Regimes: {regime_str}")
-                logger.info(f"HOLD: No signals | Regimes: {regime_str}")
+                logger.info(f"HOLD: Waiting for opportunity | {len(pairs_data)} pairs scanned")
+                for line in detail_lines:
+                    logger.info(line)
                 self._monitor_all_positions()
                 return {"step": "SIGNAL", "action": "HOLD",
                         "details": f"Regimes: {regime_str}"}

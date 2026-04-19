@@ -29,9 +29,9 @@ class CoinSwitchExchange:
 
     def _generate_signature(self, method: str, url_path: str,
                             body_dict: Dict[str, Any], epoch_time: str) -> str:
-        body_str = json.dumps(body_dict, separators=(",", ":"), sort_keys=True) if body_dict else ""
+        # Per CoinSwitch Pro API docs, POST requests MUST NOT include the body in the signature
         unquoted_path = urllib.parse.unquote(url_path)
-        message = method.upper() + unquoted_path + body_str + epoch_time
+        message = method.upper() + unquoted_path + epoch_time
 
         private_key_bytes = bytes.fromhex(self.secret_key)
         private_key = ed25519.Ed25519PrivateKey.from_private_bytes(private_key_bytes)

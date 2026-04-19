@@ -197,9 +197,8 @@ class CoinSwitchExchange:
             "symbol": symbol,
             "type": order_type.lower(),
         }
-        # Price only needed for limit orders
-        if order_type.lower() == "limit":
-            body["price"] = round(float(price), 8)
+        # Price is required for ALL order types on CoinSwitch (including market)
+        body["price"] = round(float(price), 8)
         logger.info(f"ORDER PAYLOAD: {body}")
         return self._request("POST", path, body=body)
 

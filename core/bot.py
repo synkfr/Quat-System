@@ -321,9 +321,40 @@ class QuatBot:
         if quantity <= 0:
             return False
 
+        # CRITICAL: Affordability check — position value must fit in balance
+        position_value = quantity * signal.entry_price
+        available_capital = self.risk_manager.capital
+        min_order_inr = float(os.getenv("MIN_ORDER_VALUE_INR", 100))
+
+        if position_value > available_capital * 0.95:  # 5% buffer for fees
+            # Scale down to what we can afford (use 90% of balance max)
+            max_qty = (available_capital * 0.90) / signal.entry_price
+            if max_qty * signal.entry_price < min_order_inr:
+                logger.warning(
+                    f"SKIP {symbol}: Position ₹{position_value:.0f} exceeds balance "
+                    f"₹{available_capital:.0f}, scaled qty too small (₹{max_qty * signal.entry_price:.0f})"
+                )
+                return False
+            logger.info(
+                f"SIZE ADJ {symbol}: ₹{position_value:.0f} → ₹{max_qty * signal.entry_price:.0f} "
+                f"(balance: ₹{available_capital:.0f})"
+            )
+            quantity = max_qty
+
+        # Minimum order value check (CoinSwitch requires ~₹100 minimum)
+        if quantity * signal.entry_price < min_order_inr:
+            logger.warning(
+                f"SKIP {symbol}: Order value ₹{quantity * signal.entry_price:.0f} "
+                f"below minimum ₹{min_order_inr:.0f}"
+            )
+            return False
+
         # Execute
         if self.paper_trading:
-            logger.info(f"PAPER TRADE: {signal.direction} {quantity:.6f} {symbol} [{signal.strategy}]")
+            logger.info(
+                f"PAPER TRADE: {signal.direction} {quantity:.6f} {symbol} "
+                f"[{signal.strategy}] Value=₹{quantity * signal.entry_price:.0f}"
+            )
             res = {"status": "success", "order_id": f"PAPER_{int(time.time())}"}
         else:
             res = self.exchange.place_order(

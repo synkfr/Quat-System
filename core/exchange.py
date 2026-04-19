@@ -190,16 +190,16 @@ class CoinSwitchExchange:
         path = "/trade/api/v2/order"
         # Round to 8dp and cast to native Python float (strips numpy types)
         qty = round(float(quantity), 8)
+        prc = round(float(price), 8)
         body = {
             "exchange": exchange,
             "quantity": qty,
             "side": side.lower(),
             "symbol": symbol,
-            "type": order_type.lower(),
+            "type": "limit", # Force limit order to avoid market order bug
+            "price": prc # Must be a float/number
         }
-        # Price is required for ALL order types on CoinSwitch (including market)
-        # Docs clearly state "All prices are strings in JSON", but quantity is a number
-        body["price"] = str(round(float(price), 8))
+        
         logger.info(f"ORDER PAYLOAD: {body}")
         return self._request("POST", path, body=body)
 

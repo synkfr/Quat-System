@@ -361,9 +361,10 @@ class QuatBot:
             )
             res = {"status": "success", "order_id": f"PAPER_{int(time.time())}"}
         else:
+            # Ensure native Python types (not numpy) for JSON serialization
             res = self.exchange.place_order(
                 symbol, signal.direction.lower(), "market",
-                signal.entry_price, quantity
+                float(signal.entry_price), float(quantity)
             )
 
         order_id = res.get("order_id", res.get("data", {}).get("order_id"))

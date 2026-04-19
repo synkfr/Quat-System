@@ -183,8 +183,8 @@ class CoinSwitchExchange:
             "symbol": symbol,
             "side": side.lower(),
             "type": order_type.lower(),
-            "price": str(price),
-            "quantity": str(quantity),
+            "price": float(price),
+            "quantity": float(quantity),
             "exchange": exchange,
         }
         return self._request("POST", path, body=body)

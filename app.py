@@ -206,38 +206,41 @@ with st.sidebar:
     # Quat AI Command Log
     st.markdown("<div style='font-size:10px; color:#444; margin-bottom:10px;'>QUAT_AI</div>", unsafe_allow_html=True)
     
-    log_html = '<div class="ai-container">'
-    if not st.session_state.chat_history:
-        log_html += '<div class="log-entry"><span class="log-ts">[--:--]</span><span class="log-ai">AI ></span> Ready. Ask me anything about markets, strategy, or the bot.</div>'
-    for msg in st.session_state.chat_history:
-        ts = msg.get('ts', '--:--')
-        role_class = "log-user" if msg['role'] == 'user' else "log-ai"
-        role_label = "USER" if msg['role'] == 'user' else "AI"
-        content = msg["content"].replace("<", "&lt;").replace(">", "&gt;")
-        log_html += f'<div class="log-entry"><span class="log-ts">[{ts}]</span><span class="{role_class}">{role_label} ></span> {content}</div>'
-    log_html += '</div>'
-    st.markdown(log_html, unsafe_allow_html=True)
-    
-    if st.button("CLEAR", use_container_width=True):
+    chat_container = st.container(height=380, border=True)
+    with chat_container:
+        if not st.session_state.chat_history:
+            st.chat_message("assistant", avatar="🤖").write("Ready. Ask me anything about markets, strategy, or the bot.")
+        for msg in st.session_state.chat_history:
+            avatar = "🤖" if msg["role"] == "assistant" else "👤"
+            st.chat_message(msg["role"], avatar=avatar).write(msg["content"])
+            
+    if st.button("CLEAR HISTORY", use_container_width=True):
         st.session_state.chat_history = []
         st.rerun()
 
-    # AI chat input
-    user_input = st.text_input("Command", key="ai_input", placeholder="Ask QuatAI...", label_visibility="collapsed")
-    if user_input:
+    # Native Chat Input
+    if prompt := st.chat_input("Ask QuatAI..."):
         ts = datetime.now().strftime("%H:%M")
-        st.session_state.chat_history.append({"role": "user", "content": user_input, "ts": ts})
+        st.session_state.chat_history.append({"role": "user", "content": prompt, "ts": ts})
         
-        status = load_bot_status()
-        context = f"Step: {status.get('step')}. Symbol: {symbol}. Session: {session_label}."
-        
-        try:
-            response = st.session_state.ai.chat(user_input, context=context)
-        except Exception as e:
-            response = f"Error: {e}"
+        # Render the newly entered user prompt immediately
+        with chat_container:
+            st.chat_message("user", avatar="👤").write(prompt)
+            
+            # Show spinner while thinking
+            with st.chat_message("assistant", avatar="🤖"):
+                with st.spinner("Thinking..."):
+                    status = load_bot_status()
+                    context = f"Step: {status.get('step')}. Symbol: {symbol}. Session: {session_label}."
+                    
+                    try:
+                        response = st.session_state.ai.chat(prompt, context=context)
+                    except Exception as e:
+                        response = f"Error: {e}"
+                
+                st.write(response)
         
         st.session_state.chat_history.append({"role": "assistant", "content": response, "ts": datetime.now().strftime("%H:%M")})
-        st.rerun()
 
 # ── HEADER STATISTICS ───────────────────────────────────────
 status = load_bot_status()
@@ -567,4 +570,4 @@ with t_settings:
             st.success("SAVED (restart bot to apply)")
 
 # Auto-refresh
-st_autorefresh(interval=5000, key="datarefresh")
+st_autorefresh(interval=30000, key="datarefresh")

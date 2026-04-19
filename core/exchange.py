@@ -1,6 +1,7 @@
 import requests
 import json
 import time
+import logging
 import urllib.parse
 from datetime import datetime
 from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -9,6 +10,8 @@ from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 class CoinSwitchExchange:
@@ -178,24 +181,26 @@ class CoinSwitchExchange:
                     price: float, quantity: float,
                     exchange: str = "coinswitchx") -> Dict[str, Any]:
         """Place a live order on CoinSwitch Pro.
-        
-        Per API docs:
-        - price/quantity are strings in JSON
-        - price is only required for limit orders
+
+        CoinSwitch API requires:
+        - quantity as a JSON number (float), NOT a string
+        - price only for limit orders (omit for market orders)
         - type must be "limit" or "market"
         """
         path = "/trade/api/v2/order"
-        # Cast to native float first (strips numpy types), then to str
+        # Round to 8dp and cast to native Python float (strips numpy types)
+        qty = round(float(quantity), 8)
         body = {
+            "exchange": exchange,
+            "quantity": qty,
             "side": side.lower(),
             "symbol": symbol,
             "type": order_type.lower(),
-            "quantity": str(float(quantity)),
-            "exchange": exchange,
         }
-        # Price is only required for limit orders
+        # Price only needed for limit orders
         if order_type.lower() == "limit":
-            body["price"] = str(float(price))
+            body["price"] = round(float(price), 8)
+        logger.info(f"ORDER PAYLOAD: {body}")
         return self._request("POST", path, body=body)
 
     def get_order_status(self, order_id: str,

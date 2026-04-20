@@ -14,3 +14,8 @@
 ## UI & Dashboard
 - **Sidebar Variable Scoping**: Streamlit processes pages top-to-bottom. If your sidebar assistant depends on a variable (like `symbol`) chosen in the main layout, define the sidebar block *after* the variable selection logic to avoid `NameError`.
 - **Bot Heartbeat**: When displaying status from a shared file (like `.bot_status.json`), verify the `timestamp` hasn't gone stale. If the last update is > 2 minutes old, the bot has likely crashed or stopped; show "OFFLINE" to avoid misleading the user.
+
+## Futures Mappings & Error Handling
+- **Symbol Coercion**: CoinSwitch Futures strictly expects USDT-margined tickers (like `ethusdt`). When crossing spot pairs (`ETH/INR`), the base_coin MUST be separated and reformatted.
+- **Payload Schema**: Spot requires `type="limit"` and `side="buy"`. Futures requires `order_type="MARKET"` and `side="BUY"`.
+- **Soft Fail API Rejections**: Explicit numeric exchange conditions like `base quantity 0.0035352 should be in between 0.01 to 2000` will crash live pipelines. All API calls triggered in core processing sequence must be wrapped in `try-except` chains with `return False` fallback returns rather than throwing hard Stacktraces that kill iterations.

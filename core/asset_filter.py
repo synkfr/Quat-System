@@ -16,6 +16,7 @@ TOP_30_PAIRS = [
     "ATOM/INR", "ETC/INR", "XLM/INR", "FIL/INR", "NEAR/INR",
     "APT/INR", "ARB/INR", "OP/INR", "ALGO/INR", "ICP/INR",
     "VET/INR", "HBAR/INR", "SAND/INR", "MANA/INR", "GRT/INR",
+    "GUN/INR",
 ]
 
 TOP_30_BASES = [p.split("/")[0] for p in TOP_30_PAIRS]

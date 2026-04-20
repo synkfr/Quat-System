@@ -22,7 +22,7 @@ from core.regime_detector import RegimeDetector
 
 # Page Config
 st.set_page_config(
-    page_title="QUAT SYSTEM | TERMINAL",
+    page_title="QUAT SYSTEM | FUTURES PAPER TERMINAL",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -169,19 +169,10 @@ def write_env(key: str, value: str):
         f.writelines(lines)
 
 def fetch_live_equity():
-    """Fetch real equity from CoinSwitch API, with DB fallback."""
-    try:
-        portfolio_res = st.session_state.exchange.get_portfolio()
-        data = portfolio_res.get("data", [])
-        if isinstance(data, list):
-            for bal in data:
-                if bal.get("currency") == "INR":
-                    return float(bal.get("main_balance", 0))
-    except Exception:
-        pass
-    # Fallback to DB
+    """Returns virtual capital for training mode."""
     stats = st.session_state.db.get_win_rate()
-    return stats.get("capital", 0.0)
+    # Always prioritize virtual capital in Paper mode
+    return stats.get("capital", 10000.0)
 
 # ── SIDEBAR ─────────────────────────────────────────────────
 with st.sidebar:
@@ -193,7 +184,7 @@ with st.sidebar:
     st.markdown(f"""
         <div class="sidebar-status">
             <span class="status-dot dot-live"></span>
-            LIVE
+            FUTURES PAPER
             <span style="float:right;" class="session-badge {session_class}">{session_label}</span>
         </div>
     """, unsafe_allow_html=True)
@@ -440,9 +431,8 @@ with t_status:
     
     with s1:
         st.markdown("### SYSTEM")
-        st.write(f"VERSION: `5.0.0` (Multi-Strategy)")
-        paper = os.getenv("PAPER_TRADING", "true") == "true"
-        st.write(f"MODE: `{'PAPER' if paper else 'LIVE'}`")
+        st.write(f"VERSION: `5.1.0` (Futures Paper Only)")
+        st.write(f"MODE: `FUTURES PAPER TRADING`")
         st.write(f"SCAN: `{'MULTI-PAIR' if os.getenv('MULTI_PAIR_SCAN', 'true') == 'true' else 'SINGLE'}`")
         
         session = st.session_state.session_filter.get_session_info()

@@ -61,7 +61,7 @@ class QuatBot:
 
         self.symbol = os.getenv("DEFAULT_TRADING_PAIR", "BTC/INR")
         self.trading_interval = int(os.getenv("TRADING_INTERVAL_MINUTES", 1))
-        self.paper_trading = os.getenv("PAPER_TRADING", "true").lower() == "true"
+        self.paper_trading = True  # Forced to True until Binance migration
         self.multi_pair_scan = os.getenv("MULTI_PAIR_SCAN", "true").lower() == "true"
         self.max_signals_per_cycle = int(os.getenv("MAX_SIGNALS_PER_CYCLE", 3))
         self.spread_max_pct = float(os.getenv("MAX_SPREAD_PCT", 0.5))
@@ -324,61 +324,66 @@ class QuatBot:
         if quantity <= 0:
             return False
             
+        leverage = int(os.getenv("LEVERAGE", 5))
+
         open_positions = self.db.get_open_positions()
         existing_pos = next((p for p in open_positions if p["symbol"] == symbol), None)
         
-        # Spot Market constraint: Cannot short sell
-        if signal.direction.upper() == "SELL":
-            if not existing_pos:
-                logger.info(f"SKIP {symbol}: SPOT MARKET constraint — cannot open short (SELL) positions without holding asset.")
+        reduce_only = False
+        if existing_pos:
+            existing_dir = existing_pos.get("direction", "BUY").upper()
+            if existing_dir != signal.direction.upper():
+                # Opposite position → close it
+                reduce_only = True
+                quantity = float(existing_pos.get("quantity", quantity))
+                logger.info(f"CLOSING {existing_dir} {symbol}: Sizing to exact holding of {quantity:.6f}")
+            else:
+                logger.info(f"SKIP {symbol}: Already holding a {existing_dir} position.")
                 return False
-            # If closing an existing long, we must sell exactly what we hold!
-            quantity = float(existing_pos.get("quantity", quantity))
-            position_value_inr = quantity * signal.entry_price
-            logger.info(f"CLOSING LONG {symbol}: Selling holding of {quantity:.6f} at approx ₹{position_value_inr:.0f}")
 
-        # CRITICAL: Affordability check (ONLY FOR BUYING)
+        # Margin-based affordability (Futures: margin = notional / leverage)
         position_value = quantity * signal.entry_price
+        required_margin = position_value / leverage
         available_capital = self.risk_manager.capital
         min_order_inr = float(os.getenv("MIN_ORDER_VALUE_INR", 100))
 
-        if signal.direction.upper() == "BUY":
-            if position_value > available_capital * 0.95:  # 5% buffer for fees
-                # Scale down to what we can afford (use 90% of balance max)
-                max_qty = (available_capital * 0.90) / signal.entry_price
+        if not reduce_only:
+            if required_margin > available_capital * 0.95:
+                max_margin = available_capital * 0.90
+                max_qty = (max_margin * leverage) / signal.entry_price
                 if max_qty * signal.entry_price < min_order_inr:
-                    logger.warning(
-                        f"SKIP {symbol}: Position ₹{position_value:.0f} exceeds balance "
-                        f"₹{available_capital:.0f}, scaled qty too small (₹{max_qty * signal.entry_price:.0f})"
-                    )
+                    logger.warning(f"SKIP {symbol}: Margin ₹{required_margin:.0f} > Balance ₹{available_capital:.0f}")
                     return False
-                logger.info(
-                    f"SIZE ADJ {symbol}: ₹{position_value:.0f} → ₹{max_qty * signal.entry_price:.0f} "
-                    f"(balance: ₹{available_capital:.0f})"
-                )
+                logger.info(f"SIZE ADJ {symbol}: Margin ₹{required_margin:.0f} → ₹{max_margin:.0f}")
                 quantity = max_qty
 
-        # Minimum order value check (CoinSwitch requires ~₹100 minimum)
+        # Enforce exchange minimum base quantity (0.01 for most USDT contracts)
+        if not reduce_only:
+            futures_min_qty = 0.01
+            if quantity < futures_min_qty:
+                bumped_margin = (futures_min_qty * signal.entry_price) / leverage
+                if bumped_margin <= available_capital * 0.95:
+                    logger.info(f"QTY BUMP {symbol}: {quantity:.8f} → {futures_min_qty} (exchange min)")
+                    quantity = futures_min_qty
+                else:
+                    logger.warning(f"SKIP {symbol}: Min qty {futures_min_qty} needs margin ₹{bumped_margin:.0f} > ₹{available_capital:.0f}")
+                    return False
+
+        # Minimum order value check
         if quantity * signal.entry_price < min_order_inr:
-            logger.warning(
-                f"SKIP {symbol}: Order value ₹{quantity * signal.entry_price:.0f} "
-                f"below minimum ₹{min_order_inr:.0f}"
-            )
+            logger.warning(f"SKIP {symbol}: Value ₹{quantity * signal.entry_price:.0f} below min ₹{min_order_inr:.0f}")
             return False
 
-        # Execute
-        if self.paper_trading:
-            logger.info(
-                f"PAPER TRADE: {signal.direction} {quantity:.6f} {symbol} "
-                f"[{signal.strategy}] Value=₹{quantity * signal.entry_price:.0f}"
-            )
-            res = {"status": "success", "order_id": f"PAPER_{int(time.time())}"}
-        else:
-            # Ensure native Python types (not numpy) for JSON serialization
-            res = self.exchange.place_order(
-                symbol, signal.direction.lower(), "market",
-                float(signal.entry_price), float(quantity)
-            )
+        # Map to USDT futures symbol
+        base_coin = symbol.split("/")[0].lower()
+        order_symbol = f"{base_coin}usdt"
+
+        # Execute (Paper Trading Only limit applied)
+        logger.info(
+            f"PAPER TRADE: {signal.direction} {quantity:.6f} {order_symbol} "
+            f"[{signal.strategy}] Margin=₹{required_margin:.0f} Lev={leverage}x"
+        )
+        res = {"status": "success", "order_id": f"PAPER_{int(time.time())}"}
 
         order_id = res.get("order_id", res.get("data", {}).get("order_id"))
 
@@ -415,6 +420,9 @@ class QuatBot:
         return False
 
     def _sync_portfolio(self):
+        """No live sync in Paper Only mode to preserve virtual training capital."""
+        if self.paper_trading:
+            return
         try:
             portfolio_res = self.exchange.get_portfolio()
             if portfolio_res and "data" in portfolio_res:
@@ -487,27 +495,28 @@ class QuatBot:
                 # SL/TP
                 hit = self.exchange.check_sl_tp_hit(pos, current_price)
 
-                if hit == "SL":
-                    pnl = self._calculate_pnl(pos, pos["stop_loss"])
-                    self.db.close_position(pos["id"], pos["stop_loss"], pnl, "CLOSED_SL")
+                if hit == "SL" or hit == "TP":
+                    close_price = pos["stop_loss"] if hit == "SL" else pos["take_profit"]
+                    pnl = self._calculate_pnl(pos, close_price)
+                    close_side = "SELL" if pos["direction"] == "BUY" else "BUY"
+                    
+                    self.db.close_position(pos["id"], close_price, pnl, f"CLOSED_{hit}")
                     self.risk_manager.update_capital(pnl)
-                    self.risk_manager.trigger_cooldown()
-                    self.notifier.send_sl_triggered(
-                        symbol, pos["direction"], pos["entry_price"],
-                        pos["stop_loss"], abs(pnl)
-                    )
-                    logger.info(f"SL HIT: {symbol} | PnL: {pnl:.2f}")
-                    self._snapshot_portfolio()
+                    
+                    if hit == "SL":
+                        self.risk_manager.trigger_cooldown()
+                        self.notifier.send_sl_triggered(
+                            symbol, pos["direction"], pos["entry_price"],
+                            pos["stop_loss"], abs(pnl)
+                        )
+                        logger.info(f"SL HIT: {symbol} | PnL: {pnl:.2f}")
+                    else:
+                        self.notifier.send_tp_triggered(
+                            symbol, pos["direction"], pos["entry_price"],
+                            pos["take_profit"], pnl
+                        )
+                        logger.info(f"TP HIT: {symbol} | PnL: +{pnl:.2f}")
 
-                elif hit == "TP":
-                    pnl = self._calculate_pnl(pos, pos["take_profit"])
-                    self.db.close_position(pos["id"], pos["take_profit"], pnl, "CLOSED_TP")
-                    self.risk_manager.update_capital(pnl)
-                    self.notifier.send_tp_triggered(
-                        symbol, pos["direction"], pos["entry_price"],
-                        pos["take_profit"], pnl
-                    )
-                    logger.info(f"TP HIT: {symbol} | PnL: +{pnl:.2f}")
                     self._snapshot_portfolio()
 
             except Exception as e:

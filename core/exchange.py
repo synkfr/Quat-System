@@ -177,31 +177,34 @@ class CoinSwitchExchange:
 
     # ── Order Management ────────────────────────────────────
 
-    def place_order(self, symbol: str, side: str, order_type: str,
-                    price: float, quantity: float,
-                    exchange: str = "coinswitchx") -> Dict[str, Any]:
-        """Place a live order on CoinSwitch Pro.
-
-        CoinSwitch API requires:
-        - quantity as a JSON number (float), NOT a string
-        - price only for limit orders (omit for market orders)
-        - type must be "limit" or "market"
-        """
-        path = "/trade/api/v2/order"
-        # Round to 8dp and cast to native Python float (strips numpy types)
-        qty = round(float(quantity), 8)
-        prc = round(float(price), 8)
+    def set_leverage(self, symbol: str, leverage: int, exchange: str = "EXCHANGE_2") -> Dict:
+        """Set leverage for a futures pair. Must be done before placing a futures order."""
+        path = "/trade/api/v2/futures/leverage"
         body = {
             "exchange": exchange,
-            "quantity": qty,
-            "side": side.lower(),
             "symbol": symbol,
-            "type": "limit", # Force limit order to avoid market order bug
-            "price": prc # Must be a float/number
+            "leverage": int(leverage)
         }
-        
-        logger.info(f"ORDER PAYLOAD: {body}")
         return self._request("POST", path, body=body)
+
+    def place_order(self, symbol: str, side: str, order_type: str,
+                    price: float, quantity: float,
+                    reduce_only: bool = False) -> Dict[str, Any]:
+        """Place a Futures order on CoinSwitch Pro (USDT-margined)."""
+        qty = round(float(quantity), 8)
+        
+        body = {
+            "exchange": "EXCHANGE_2",
+            "symbol": symbol,
+            "side": side.upper(),
+            "order_type": "MARKET",
+            "quantity": qty
+        }
+        if reduce_only:
+            body["reduce_only"] = True
+            
+        logger.info(f"ORDER PAYLOAD: {body}")
+        return self._request("POST", "/trade/api/v2/futures/order", body=body)
 
     def get_order_status(self, order_id: str,
                          exchange: str = "coinswitchx") -> Dict[str, Any]:

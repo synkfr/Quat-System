@@ -152,7 +152,7 @@ Time:        {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
         try:
             msg = MIMEMultipart("alternative")
-            msg["Subject"] = f"[QuatSystem] {subject}"
+            msg["Subject"] = f"[PAPER] {subject}"
             msg["From"] = self.sender
             msg["To"] = self.recipient
 
